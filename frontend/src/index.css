@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --accent: #C8FF3E;
+    --accent-dim: rgba(200, 255, 62, 0.15);
+    --accent-glow: 0 0 20px rgba(200, 255, 62, 0.3);
+    --bg-primary: #0A0A0A;
+    --bg-secondary: #111111;
+    --bg-card: #1A1A1A;
+    --bg-hover: #222222;
+    --text-primary: #FFFFFF;
+    --text-secondary: #888888;
+    --text-muted: #555555;
+    --border: rgba(255,255,255,0.06);
+    --sidebar-width: 240px;
+    --player-height: 80px;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Syne', sans-serif;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+  }
+}
+
+@layer components {
+  /* Skeleton loading animation */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      #1a1a1a 25%,
+      #2a2a2a 50%,
+      #1a1a1a 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 6px;
+  }
+
+  /* Track row hover */
+  .track-row {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer transition-all duration-200;
+    @apply hover:bg-white/5;
+  }
+
+  .track-row.active {
+    @apply bg-white/5;
+  }
+
+  .track-row.active .track-title {
+    color: var(--accent);
+  }
+
+  /* Card hover lift */
+  .music-card {
+    @apply rounded-2xl overflow-hidden cursor-pointer transition-all duration-300;
+    @apply hover:scale-[1.03] hover:shadow-2xl;
+  }
+
+  /* Accent button */
+  .btn-accent {
+    background: var(--accent);
+    color: #000;
+    @apply font-bold rounded-full px-6 py-2 transition-all duration-200;
+    @apply hover:brightness-110 hover:shadow-lg active:scale-95;
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply border border-white/10 text-white/70 rounded-full px-6 py-2;
+    @apply transition-all duration-200 hover:border-white/30 hover:text-white;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply relative h-1 rounded-full cursor-pointer overflow-hidden;
+    background: rgba(255,255,255,0.1);
+  }
+
+  .progress-bar-fill {
+    @apply h-full rounded-full transition-all duration-100;
+    background: var(--accent);
+  }
+
+  .progress-bar:hover .progress-bar-fill {
+    box-shadow: var(--accent-glow);
+  }
+
+  /* Spinning cover art */
+  .cover-spinning {
+    animation: spin 12s linear infinite;
+  }
+
+  /* Pulse ring for active track */
+  .pulse-ring {
+    @apply absolute inset-0 rounded-full;
+    border: 2px solid var(--accent);
+    animation: pulseRing 2s ease-out infinite;
+  }
+
+  /* Genre card */
+  .genre-card {
+    @apply relative rounded-2xl p-6 cursor-pointer overflow-hidden;
+    @apply transition-all duration-300 hover:scale-[1.04] hover:shadow-2xl;
+  }
+}
+
+@keyframes pulseRing {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.35s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out both;
+}
+
+/* Staggered children */
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.3s; }
