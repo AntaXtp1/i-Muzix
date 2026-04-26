@@ -39,7 +39,7 @@ export function ServerWakeup() {
       </div>
       <div className="text-center">
         <p className="text-white font-semibold mb-1">Nyalain server dulu...</p>
-        <p className="text-white/40 text-sm font-mono">HuggingFace lagi warm-up, tunggu 20-30 detik ya</p>
+        <p className="text-white/40 text-sm font-mono">Server Lagi proses nyala...</p>
       </div>
       <div className="flex gap-1 mt-2">
         {[0, 1, 2, 3, 4].map(i => (
