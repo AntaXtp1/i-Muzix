@@ -100,7 +100,7 @@ export default function HomePage() {
         <div className="text-center py-16 animate-fade-in">
           <div className="text-4xl mb-4">⚠️</div>
           <p className="text-white/60 mb-2">Gagal konek ke server</p>
-          <p className="text-white/30 text-sm mb-6">Mungkin HF Space lagi cold start, coba lagi</p>
+          <p className="text-white/30 text-sm mb-6">Server mungkin sedang cold start...</p>
           <button onClick={fetchCharts} className="btn-accent text-sm">
             Retry
           </button>
