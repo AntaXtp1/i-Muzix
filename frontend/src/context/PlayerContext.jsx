@@ -5,6 +5,9 @@ const PlayerContext = createContext(null);
 
 export function PlayerProvider({ children }) {
   const audioRef = useRef(null);
+  const embedRef = useRef(null);          // ← ref ke iframe embed
+  const handleNextRef = useRef(null);     // ← anti-stale closure untuk embed ended
+
   const [queue, setQueue] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -34,14 +37,14 @@ export function PlayerProvider({ children }) {
     localStorage.setItem('imuzik_liked', JSON.stringify(likedTracks));
   }, [likedTracks]);
 
-  // Audio event listeners
+  // Audio event listeners (untuk mode <audio> — tidak berubah)
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     const onTimeUpdate = () => setProgress(audio.currentTime);
     const onDurationChange = () => setDuration(audio.duration || 0);
-    const onEnded = () => handleNext();
+    const onEnded = () => handleNextRef.current?.();
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
     const onError = () => {
@@ -66,16 +69,64 @@ export function PlayerProvider({ children }) {
     };
   }, []);
 
-  // Update volume
+  // YouTube IFrame API — listen postMessage dari iframe
+  useEffect(() => {
+    const handleYTMessage = (event) => {
+      if (event.origin !== 'https://www.youtube.com') return;
+      try {
+        const data = JSON.parse(event.data);
+        if (data.event === 'infoDelivery' && data.info) {
+          const info = data.info;
+          // Update progress & duration dari YouTube
+          if (typeof info.currentTime === 'number') setProgress(info.currentTime);
+          if (typeof info.duration === 'number' && info.duration > 0) setDuration(info.duration);
+          // playerState: 0=ended, 1=playing, 2=paused
+          if (info.playerState === 0) handleNextRef.current?.();
+          if (info.playerState === 1) setIsPlaying(true);
+          if (info.playerState === 2) setIsPlaying(false);
+        }
+      } catch { /* bukan JSON atau bukan dari YT */ }
+    };
+
+    window.addEventListener('message', handleYTMessage);
+    return () => window.removeEventListener('message', handleYTMessage);
+  }, []);
+
+  // Helper: kirim command ke YouTube iframe via postMessage
+  const sendEmbedCommand = useCallback((func, args = '') => {
+    if (!embedRef.current?.contentWindow) return;
+    embedRef.current.contentWindow.postMessage(
+      JSON.stringify({ event: 'command', func, args }),
+      'https://www.youtube.com'
+    );
+  }, []);
+
+  // Dipanggil pas iframe selesai load — mulai subscribe ke info updates
+  const onEmbedLoad = useCallback(() => {
+    if (!embedRef.current?.contentWindow) return;
+    embedRef.current.contentWindow.postMessage(
+      JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }),
+      'https://www.youtube.com'
+    );
+  }, []);
+
+  // Update volume — audio element + iframe embed
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
+
+  // Sync volume ke iframe kalau lagi embed mode
+  useEffect(() => {
+    if (embedUrl) sendEmbedCommand('setVolume', [Math.round(volume * 100)]);
+  }, [volume, embedUrl, sendEmbedCommand]);
 
   const loadAndPlay = useCallback(async (track) => {
     if (!track?.videoId) return;
     setLoading(true);
     setStreamError(false);
     setEmbedUrl(null);
+    setProgress(0);
+    setDuration(0);
 
     try {
       const data = await api.stream(track.videoId, quality);
@@ -87,8 +138,9 @@ export function PlayerProvider({ children }) {
         setIsPlaying(true);
         setEmbedUrl(null);
       } else if (data.embedUrl) {
-        // Fallback to embed
-        setEmbedUrl(data.embedUrl);
+        // Tambah origin supaya postMessage balik ke parent bisa jalan
+        const origin = encodeURIComponent(window.location.origin);
+        setEmbedUrl(`${data.embedUrl}&origin=${origin}`);
         setIsPlaying(true);
         setStreamError(false);
       }
@@ -120,7 +172,14 @@ export function PlayerProvider({ children }) {
     const audio = audioRef.current;
     if (!audio) return;
     if (embedUrl) {
-      setIsPlaying(p => !p);
+      // Kontrol iframe via postMessage — bukan cuma visual state
+      if (isPlaying) {
+        sendEmbedCommand('pauseVideo');
+        setIsPlaying(false);
+      } else {
+        sendEmbedCommand('playVideo');
+        setIsPlaying(true);
+      }
       return;
     }
     if (isPlaying) {
@@ -128,7 +187,7 @@ export function PlayerProvider({ children }) {
     } else {
       audio.play().catch(() => {});
     }
-  }, [isPlaying, embedUrl]);
+  }, [isPlaying, embedUrl, sendEmbedCommand]);
 
   const handleNext = useCallback(() => {
     if (queue.length === 0) return;
@@ -144,6 +203,9 @@ export function PlayerProvider({ children }) {
     loadAndPlay(queue[nextIdx]);
   }, [queue, currentIndex, repeat, shuffle, loadAndPlay]);
 
+  // Selalu update ref supaya listener embed & audio gak stale
+  handleNextRef.current = handleNext;
+
   const handlePrev = useCallback(() => {
     const audio = audioRef.current;
     if (audio && audio.currentTime > 3) {
@@ -157,11 +219,16 @@ export function PlayerProvider({ children }) {
 
   const seekTo = useCallback((time) => {
     const audio = audioRef.current;
-    if (audio && !embedUrl) {
+    if (embedUrl) {
+      sendEmbedCommand('seekTo', [time, true]);
+      setProgress(time);
+      return;
+    }
+    if (audio) {
       audio.currentTime = time;
       setProgress(time);
     }
-  }, [embedUrl]);
+  }, [embedUrl, sendEmbedCommand]);
 
   const toggleLike = useCallback((track) => {
     setLikedTracks(prev => {
@@ -184,6 +251,8 @@ export function PlayerProvider({ children }) {
   return (
     <PlayerContext.Provider value={{
       audioRef,
+      embedRef,
+      onEmbedLoad,
       queue, setQueue,
       currentIndex, currentTrack,
       isPlaying, loading, streamError, embedUrl,
