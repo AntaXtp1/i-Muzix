@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
-import { TrendingUp, Zap, Music } from 'lucide-react';
-import api from '../utils/api';
+import { useEffect } from 'react';
+import { TrendingUp, Zap } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import MusicCard from '../components/MusicCard';
 import TrackRow from '../components/TrackRow';
@@ -50,27 +49,10 @@ function FeaturedBanner({ track, onPlay }) {
 }
 
 export default function HomePage() {
-  const { playTrack } = usePlayer();
-  const [charts, setCharts] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const [retrying, setRetrying] = useState(false);
-
-  const fetchCharts = async () => {
-    setLoading(true);
-    setError(false);
-    try {
-      const data = await api.charts('ID');
-      setCharts(data);
-    } catch (e) {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { playTrack, charts, chartsLoading, chartsError, fetchCharts } = usePlayer();
 
   useEffect(() => {
-    fetchCharts();
+    fetchCharts(); // no-op kalau data masih fresh (<10 menit)
   }, []);
 
   const topSongs = charts?.top_songs || [];
@@ -89,19 +71,19 @@ export default function HomePage() {
       </div>
 
       {/* Server waking up */}
-      {loading && !charts && (
+      {chartsLoading && !charts && (
         <>
           <SkeletonBanner />
           <ServerWakeup />
         </>
       )}
 
-      {error && (
+      {chartsError && (
         <div className="text-center py-16 animate-fade-in">
           <div className="text-4xl mb-4">⚠️</div>
           <p className="text-white/60 mb-2">Gagal konek ke server</p>
-          <p className="text-white/30 text-sm mb-6">Server mungkin sedang cold start...</p>
-          <button onClick={fetchCharts} className="btn-accent text-sm">
+          <p className="text-white/30 text-sm mb-6">Mungkin HF Space lagi cold start, coba lagi</p>
+          <button onClick={() => fetchCharts(true)} className="btn-accent text-sm">
             Retry
           </button>
         </div>
