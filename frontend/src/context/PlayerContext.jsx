@@ -7,6 +7,9 @@ export function PlayerProvider({ children }) {
   const audioRef = useRef(null);
   const embedRef = useRef(null);          // ← ref ke iframe embed
   const handleNextRef = useRef(null);     // ← anti-stale closure untuk embed ended
+  const loadAndPlayRef = useRef(null);    // ← anti-stale closure untuk stall retry
+  const currentTrackRef = useRef(null);  // ← track aktif terbaru (hindari stale closure)
+  const retryCountRef = useRef(0);       // ← counter retry stall (max 2x)
 
   const [queue, setQueue] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -15,6 +18,7 @@ export function PlayerProvider({ children }) {
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.8);
   const [shuffle, setShuffle] = useState(false);
+  const shuffledQueueRef = useRef([]); // pre-computed shuffle order
   const [repeat, setRepeat] = useState('none'); // 'none' | 'all' | 'one'
   const [quality, setQuality] = useState(() => localStorage.getItem('imuzik_quality') || 'normal');
   const [loading, setLoading] = useState(false);
@@ -61,35 +65,70 @@ export function PlayerProvider({ children }) {
     localStorage.setItem('imuzik_liked', JSON.stringify(likedTracks));
   }, [likedTracks]);
 
-  // Audio event listeners (untuk mode <audio> — tidak berubah)
+  // Audio event listeners
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const onTimeUpdate = () => setProgress(audio.currentTime);
+    const onTimeUpdate   = () => setProgress(audio.currentTime);
     const onDurationChange = () => setDuration(audio.duration || 0);
-    const onEnded = () => handleNextRef.current?.();
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
-    const onError = () => {
-      setStreamError(true);
-      setLoading(false);
+    const onEnded        = () => handleNextRef.current?.();
+    const onPlay         = () => setIsPlaying(true);
+    const onPause        = () => setIsPlaying(false);
+    const onError        = () => { setStreamError(true); setLoading(false); };
+
+    // ─── STALL HANDLERS ────────────────────────────────────────────────────
+    // waiting = browser nunggu buffer (CDN lambat / throttle)
+    // → stop cover art spinning, tunjukkan loading spinner
+    const onWaiting = () => {
+      setLoading(true);
+      setIsPlaying(false);
     };
 
-    audio.addEventListener('timeupdate', onTimeUpdate);
+    // stalled = browser bener-bener stuck, gak ada data masuk 3+ detik
+    // → sama kayak waiting + trigger retry kalau belum exceed limit
+    const onStalled = () => {
+      setLoading(true);
+      setIsPlaying(false);
+      if (retryCountRef.current < 2 && currentTrackRef.current) {
+        retryCountRef.current += 1;
+        loadAndPlayRef.current?.(currentTrackRef.current);
+      }
+    };
+
+    // canplay = data tersedia lagi, tapi tunggu 'playing' buat set isPlaying
+    const onCanPlay = () => setLoading(false);
+
+    // playing = audio beneran mulai jalan lagi setelah waiting/stalled
+    const onPlaying = () => {
+      setLoading(false);
+      setIsPlaying(true);
+      retryCountRef.current = 0; // reset retry counter kalau berhasil
+    };
+    // ───────────────────────────────────────────────────────────────────────
+
+    audio.addEventListener('timeupdate',     onTimeUpdate);
     audio.addEventListener('durationchange', onDurationChange);
-    audio.addEventListener('ended', onEnded);
-    audio.addEventListener('play', onPlay);
-    audio.addEventListener('pause', onPause);
-    audio.addEventListener('error', onError);
+    audio.addEventListener('ended',          onEnded);
+    audio.addEventListener('play',           onPlay);
+    audio.addEventListener('pause',          onPause);
+    audio.addEventListener('error',          onError);
+    audio.addEventListener('waiting',        onWaiting);
+    audio.addEventListener('stalled',        onStalled);
+    audio.addEventListener('canplay',        onCanPlay);
+    audio.addEventListener('playing',        onPlaying);
 
     return () => {
-      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('timeupdate',     onTimeUpdate);
       audio.removeEventListener('durationchange', onDurationChange);
-      audio.removeEventListener('ended', onEnded);
-      audio.removeEventListener('play', onPlay);
-      audio.removeEventListener('pause', onPause);
-      audio.removeEventListener('error', onError);
+      audio.removeEventListener('ended',          onEnded);
+      audio.removeEventListener('play',           onPlay);
+      audio.removeEventListener('pause',          onPause);
+      audio.removeEventListener('error',          onError);
+      audio.removeEventListener('waiting',        onWaiting);
+      audio.removeEventListener('stalled',        onStalled);
+      audio.removeEventListener('canplay',        onCanPlay);
+      audio.removeEventListener('playing',        onPlaying);
     };
   }, []);
 
@@ -146,6 +185,7 @@ export function PlayerProvider({ children }) {
 
   const loadAndPlay = useCallback(async (track) => {
     if (!track?.videoId) return;
+    retryCountRef.current = 0; // reset retry tiap track baru
     setLoading(true);
     setStreamError(false);
     setEmbedUrl(null);
@@ -213,13 +253,40 @@ export function PlayerProvider({ children }) {
     }
   }, [isPlaying, embedUrl, sendEmbedCommand]);
 
+  // Toggle shuffle + pre-compute urutan sekarang juga
+  // Fisher-Yates shuffle — truly random, no repeat
+  const toggleShuffle = useCallback(() => {
+    setShuffle(prev => {
+      const next = !prev;
+      if (next && queue.length > 1) {
+        const indices = queue.map((_, i) => i).filter(i => i !== currentIndex);
+        for (let i = indices.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [indices[i], indices[j]] = [indices[j], indices[i]];
+        }
+        shuffledQueueRef.current = indices; // urutan next yang akan dipakai
+      }
+      return next;
+    });
+  }, [queue, currentIndex]);
+
   const handleNext = useCallback(() => {
     if (queue.length === 0) return;
     let nextIdx;
     if (repeat === 'one') {
       nextIdx = currentIndex;
     } else if (shuffle) {
-      nextIdx = Math.floor(Math.random() * queue.length);
+      // Ambil dari pre-computed shuffled list, shift satu per satu
+      // Kalau list habis, re-shuffle lagi otomatis
+      if (shuffledQueueRef.current.length === 0) {
+        const indices = queue.map((_, i) => i).filter(i => i !== currentIndex);
+        for (let i = indices.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [indices[i], indices[j]] = [indices[j], indices[i]];
+        }
+        shuffledQueueRef.current = indices;
+      }
+      nextIdx = shuffledQueueRef.current.shift();
     } else {
       nextIdx = (currentIndex + 1) % queue.length;
     }
@@ -229,6 +296,8 @@ export function PlayerProvider({ children }) {
 
   // Selalu update ref supaya listener embed & audio gak stale
   handleNextRef.current = handleNext;
+  loadAndPlayRef.current = loadAndPlay;
+  currentTrackRef.current = currentTrack;
 
   const handlePrev = useCallback(() => {
     const audio = audioRef.current;
@@ -266,9 +335,10 @@ export function PlayerProvider({ children }) {
     likedTracks.some(t => t.videoId === videoId), [likedTracks]);
 
   // Re-load when quality changes and something is playing
+  // Pakai ref biar ga baca currentTrack/isPlaying dari closure lama
   useEffect(() => {
-    if (currentTrack && isPlaying) {
-      loadAndPlay(currentTrack);
+    if (currentTrackRef.current && audioRef.current && !audioRef.current.paused) {
+      loadAndPlayRef.current?.(currentTrackRef.current);
     }
   }, [quality]);
 
@@ -281,7 +351,7 @@ export function PlayerProvider({ children }) {
       currentIndex, currentTrack,
       isPlaying, loading, streamError, embedUrl,
       progress, duration, volume, setVolume,
-      shuffle, setShuffle,
+      shuffle, setShuffle: toggleShuffle,
       repeat, setRepeat,
       quality, setQuality,
       likedTracks,
