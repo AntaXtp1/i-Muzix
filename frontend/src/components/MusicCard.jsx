@@ -30,6 +30,12 @@ export default function MusicCard({ track, size = 'md' }) {
             alt={track.title}
             className={`w-full h-full object-cover transition-transform duration-500 ${hovered ? 'scale-110' : 'scale-100'}`}
             loading="lazy"
+            onError={(e) => {
+              // maxresdefault kadang gak exist — fallback ke hqdefault
+              if (e.target.src.includes('maxresdefault')) {
+                e.target.src = e.target.src.replace('maxresdefault', 'hqdefault');
+              }
+            }}
           />
         ) : (
           <div className="w-full h-full bg-[#2a2a2a] flex items-center justify-center">

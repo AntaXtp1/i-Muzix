@@ -20,6 +20,7 @@ export default function PlayerBar() {
     quality, setQuality,
     togglePlay, handleNext, handlePrev, seekTo,
     toggleLike, isLiked,
+    embedRef, onEmbedLoad,
   } = usePlayer();
 
   const progressRef = useRef(null);
@@ -61,6 +62,11 @@ export default function PlayerBar() {
               alt={currentTrack.title}
               className={`w-full h-full object-cover ${isPlaying ? 'cover-spinning' : ''}`}
               style={{ animationPlayState: isPlaying ? 'running' : 'paused' }}
+              onError={(e) => {
+                if (e.target.src.includes('maxresdefault')) {
+                  e.target.src = e.target.src.replace('maxresdefault', 'hqdefault');
+                }
+              }}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
@@ -244,10 +250,12 @@ export default function PlayerBar() {
       {/* Embed iframe (hidden, last resort) */}
       {embedUrl && (
         <iframe
+          ref={embedRef}
           src={embedUrl}
           className="hidden"
           allow="autoplay"
           title="audio-fallback"
+          onLoad={onEmbedLoad}
         />
       )}
     </div>
