@@ -25,6 +25,30 @@ export function PlayerProvider({ children }) {
     catch { return []; }
   });
 
+  // ─── CHARTS CACHE ──────────────────────────────────────────────────────────
+  const [charts, setCharts] = useState(null);
+  const [chartsLoading, setChartsLoading] = useState(false);
+  const [chartsError, setChartsError] = useState(false);
+  const chartsTimestampRef = useRef(0);
+  const CHARTS_TTL = 10 * 60 * 1000; // 10 menit
+
+  const fetchCharts = useCallback(async (force = false) => {
+    const isStale = Date.now() - chartsTimestampRef.current > CHARTS_TTL;
+    if (!force && charts && !isStale) return; // data masih fresh, skip
+
+    setChartsLoading(true);
+    setChartsError(false);
+    try {
+      const data = await api.charts('ID');
+      setCharts(data);
+      chartsTimestampRef.current = Date.now();
+    } catch {
+      setChartsError(true);
+    } finally {
+      setChartsLoading(false);
+    }
+  }, [charts]);
+
   const currentTrack = currentIndex >= 0 ? queue[currentIndex] : null;
 
   // Persist quality
@@ -264,6 +288,7 @@ export function PlayerProvider({ children }) {
       playTrack, togglePlay,
       handleNext, handlePrev,
       seekTo, toggleLike, isLiked,
+      charts, chartsLoading, chartsError, fetchCharts,
     }}>
       <audio ref={audioRef} preload="auto" />
       {children}
