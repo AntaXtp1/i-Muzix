@@ -10,6 +10,10 @@ export function PlayerProvider({ children }) {
   const loadAndPlayRef = useRef(null);    // ← anti-stale closure untuk stall retry
   const currentTrackRef = useRef(null);  // ← track aktif terbaru (hindari stale closure)
   const retryCountRef = useRef(0);       // ← counter retry stall (max 2x)
+  // stream URL cache — key: `${videoId}_${quality}`, value: {url, ts}
+  // TTL 25 menit karena YouTube signed URL expired ~30 menit
+  const streamCacheRef = useRef(new Map());
+  const STREAM_CACHE_TTL = 25 * 60 * 1000;
 
   const [queue, setQueue] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -132,6 +136,24 @@ export function PlayerProvider({ children }) {
     };
   }, []);
 
+  // ─── TAB VISIBILITY — auto-resume saat user balik ke tab ──────────────────
+  // Browser throttle/suspend audio di tab background yang belum fully buffered.
+  // Saat tab aktif lagi, cek apakah audio harusnya playing tapi malah paused.
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.hidden) return; // tab ke background, ga perlu action
+      const audio = audioRef.current;
+      if (!audio || embedUrl) return; // embed mode dihandle YT sendiri
+      // isPlaying state true tapi audio.paused = browser suspend saat background
+      if (audio.paused && audio.src && !audio.ended) {
+        audio.play().catch(() => {}); // soft resume, ignore error
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [embedUrl]); // re-attach kalau mode berubah embed ↔ stream
+  // ───────────────────────────────────────────────────────────────────────────
+
   // YouTube IFrame API — listen postMessage dari iframe
   useEffect(() => {
     const handleYTMessage = (event) => {
@@ -185,7 +207,7 @@ export function PlayerProvider({ children }) {
 
   const loadAndPlay = useCallback(async (track) => {
     if (!track?.videoId) return;
-    retryCountRef.current = 0; // reset retry tiap track baru
+    retryCountRef.current = 0;
     setLoading(true);
     setStreamError(false);
     setEmbedUrl(null);
@@ -193,21 +215,49 @@ export function PlayerProvider({ children }) {
     setDuration(0);
 
     try {
-      const data = await api.stream(track.videoId, quality);
-      if (data.method === 'stream' && data.url) {
+      // ─── STREAM CACHE ─────────────────────────────────────────────────
+      const cacheKey = `${track.videoId}_${quality}`;
+      const cached = streamCacheRef.current.get(cacheKey);
+      const isFresh = cached && (Date.now() - cached.ts < STREAM_CACHE_TTL);
+
+      let streamUrl = null;
+      let useEmbed = false;
+      let embedSrc = null;
+
+      if (isFresh) {
+        // Cache hit — skip request ke backend
+        streamUrl = cached.url;
+      } else {
+        const data = await api.stream(track.videoId, quality);
+        if (data.method === 'stream' && data.url) {
+          streamUrl = data.url;
+          // Simpan ke cache
+          streamCacheRef.current.set(cacheKey, { url: streamUrl, ts: Date.now() });
+          // Buang cache lama kalau > 30 entry (biar ga bloat)
+          if (streamCacheRef.current.size > 30) {
+            const oldest = streamCacheRef.current.keys().next().value;
+            streamCacheRef.current.delete(oldest);
+          }
+        } else if (data.embedUrl) {
+          useEmbed = true;
+          embedSrc = data.embedUrl;
+        }
+      }
+
+      if (streamUrl) {
         const audio = audioRef.current;
-        audio.src = data.url;
-        audio.load();
+        audio.src = streamUrl;
+        // audio.load() dihapus — redundant, justru bikin browser abort & restart
         await audio.play();
         setIsPlaying(true);
         setEmbedUrl(null);
-      } else if (data.embedUrl) {
-        // Tambah origin supaya postMessage balik ke parent bisa jalan
+      } else if (useEmbed) {
         const origin = encodeURIComponent(window.location.origin);
-        setEmbedUrl(`${data.embedUrl}&origin=${origin}`);
+        setEmbedUrl(`${embedSrc}&origin=${origin}`);
         setIsPlaying(true);
         setStreamError(false);
       }
+      // ──────────────────────────────────────────────────────────────────
     } catch (err) {
       setStreamError(true);
     } finally {
