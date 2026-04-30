@@ -10,6 +10,8 @@ export function PlayerProvider({ children }) {
   const loadAndPlayRef = useRef(null);    // ← anti-stale closure untuk stall retry
   const currentTrackRef = useRef(null);  // ← track aktif terbaru (hindari stale closure)
   const retryCountRef = useRef(0);       // ← counter retry stall (max 2x)
+  const isRetryRef = useRef(false);      // ← flag: ini retry stall atau track baru
+  const waitingTimerRef = useRef(null);  // ← debounce timer untuk 'waiting' event
   // stream URL cache — key: `${videoId}_${quality}`, value: {url, ts}
   // TTL 25 menit karena YouTube signed URL expired ~30 menit
   const streamCacheRef = useRef(new Map());
@@ -83,28 +85,40 @@ export function PlayerProvider({ children }) {
 
     // ─── STALL HANDLERS ────────────────────────────────────────────────────
     // waiting = browser nunggu buffer (CDN lambat / throttle)
-    // → stop cover art spinning, tunjukkan loading spinner
+    // → debounce 1.5s sebelum set isPlaying=false, biar buffering normal
+    //   (1-2 detik) ga bikin cover art flicker stop-start
     const onWaiting = () => {
       setLoading(true);
-      setIsPlaying(false);
+      // Kalau 'playing' event dateng dalam 1.5s → cancel, ga perlu action
+      clearTimeout(waitingTimerRef.current);
+      waitingTimerRef.current = setTimeout(() => {
+        setIsPlaying(false);
+      }, 1500);
     };
 
     // stalled = browser bener-bener stuck, gak ada data masuk 3+ detik
     // → sama kayak waiting + trigger retry kalau belum exceed limit
     const onStalled = () => {
+      clearTimeout(waitingTimerRef.current);
       setLoading(true);
       setIsPlaying(false);
       if (retryCountRef.current < 2 && currentTrackRef.current) {
         retryCountRef.current += 1;
+        isRetryRef.current = true; // tandai ini retry, bukan track baru
         loadAndPlayRef.current?.(currentTrackRef.current);
       }
     };
 
     // canplay = data tersedia lagi, tapi tunggu 'playing' buat set isPlaying
-    const onCanPlay = () => setLoading(false);
+    const onCanPlay = () => {
+      clearTimeout(waitingTimerRef.current);
+      setLoading(false);
+    };
 
     // playing = audio beneran mulai jalan lagi setelah waiting/stalled
+    // cancel debounce timer — buffering selesai, ga perlu set isPlaying=false
     const onPlaying = () => {
+      clearTimeout(waitingTimerRef.current);
       setLoading(false);
       setIsPlaying(true);
       retryCountRef.current = 0; // reset retry counter kalau berhasil
@@ -123,6 +137,7 @@ export function PlayerProvider({ children }) {
     audio.addEventListener('playing',        onPlaying);
 
     return () => {
+      clearTimeout(waitingTimerRef.current);
       audio.removeEventListener('timeupdate',     onTimeUpdate);
       audio.removeEventListener('durationchange', onDurationChange);
       audio.removeEventListener('ended',          onEnded);
@@ -207,7 +222,13 @@ export function PlayerProvider({ children }) {
 
   const loadAndPlay = useCallback(async (track) => {
     if (!track?.videoId) return;
-    retryCountRef.current = 0;
+    // Reset counter HANYA kalau ini bukan retry dari onStalled
+    // Kalau retry, counter dibiarkan naik agar limit 2x works
+    if (!isRetryRef.current) {
+      retryCountRef.current = 0;
+    }
+    const wasRetry = isRetryRef.current; // simpan sebelum di-reset
+    isRetryRef.current = false; // reset flag setelah dicek
     setLoading(true);
     setStreamError(false);
     setEmbedUrl(null);
@@ -218,7 +239,12 @@ export function PlayerProvider({ children }) {
       // ─── STREAM CACHE ─────────────────────────────────────────────────
       const cacheKey = `${track.videoId}_${quality}`;
       const cached = streamCacheRef.current.get(cacheKey);
-      const isFresh = cached && (Date.now() - cached.ts < STREAM_CACHE_TTL);
+      // Kalau ini retry dari stall, invalidate cache — URL lama mungkin udah
+      // throttled/expired duluan, harus fetch fresh dari backend
+      if (wasRetry) {
+        streamCacheRef.current.delete(cacheKey);
+      }
+      const isFresh = !wasRetry && cached && (Date.now() - cached.ts < STREAM_CACHE_TTL);
 
       let streamUrl = null;
       let useEmbed = false;
