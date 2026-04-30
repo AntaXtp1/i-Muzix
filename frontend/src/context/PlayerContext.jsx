@@ -18,6 +18,7 @@ export function PlayerProvider({ children }) {
   // TTL 25 menit karena YouTube signed URL expired ~30 menit
   const streamCacheRef = useRef(new Map());
   const STREAM_CACHE_TTL = 25 * 60 * 1000;
+  const prefetchedRef = useRef(new Set()); // track videoId yang udah di-prefetch sesi ini
 
   const [queue, setQueue] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -67,6 +68,50 @@ export function PlayerProvider({ children }) {
   useEffect(() => {
     localStorage.setItem('imuzik_quality', quality);
   }, [quality]);
+
+  // ─── PREFETCH NEXT TRACK ───────────────────────────────────────────────────
+  // Saat lagu sisa 20 detik ATAU udah 80% progress → diam-diam fetch stream URL
+  // track berikutnya ke cache. Pas lagu beneran ganti → URL udah ready, instant.
+  useEffect(() => {
+    if (!duration || duration < 10) return;       // lagu belum ke-load
+    if (!isPlaying) return;                        // ga usah prefetch kalau pause
+
+    const timeLeft   = duration - progress;
+    const pct        = duration > 0 ? progress / duration : 0;
+    const shouldFire = timeLeft <= 20 || pct >= 0.80;
+    if (!shouldFire) return;
+
+    // Hitung next index (ikutin logika shuffle/repeat)
+    let nextIdx = -1;
+    if (repeat === 'one') return;                 // repeat one → lagu sama, skip prefetch
+    if (shuffle && shuffledQueueRef.current.length > 0) {
+      nextIdx = shuffledQueueRef.current[0];      // peek tanpa shift
+    } else {
+      nextIdx = (currentIndex + 1) % queue.length;
+    }
+    if (nextIdx < 0 || nextIdx === currentIndex) return;
+
+    const nextTrack = queue[nextIdx];
+    if (!nextTrack?.videoId) return;
+
+    const cacheKey = `${nextTrack.videoId}_${quality}`;
+    // Udah di-cache atau udah di-prefetch sesi ini → skip
+    if (streamCacheRef.current.has(cacheKey)) return;
+    if (prefetchedRef.current.has(cacheKey))  return;
+
+    prefetchedRef.current.add(cacheKey); // tandai sebelum fetch biar ga double-fire
+
+    // Fire and forget — error diabaikan, ini best-effort
+    api.stream(nextTrack.videoId, quality).then(data => {
+      if (data.method === 'stream' && data.url) {
+        streamCacheRef.current.set(cacheKey, { url: data.url, ts: Date.now() });
+        console.debug(`[prefetch] ✅ ${nextTrack.title}`);
+      }
+    }).catch(() => {
+      prefetchedRef.current.delete(cacheKey); // gagal → boleh coba lagi nanti
+    });
+  }, [progress, duration, isPlaying, currentIndex, queue, shuffle, repeat, quality]);
+  // ───────────────────────────────────────────────────────────────────────────
 
   // Persist liked
   useEffect(() => {
@@ -278,8 +323,9 @@ export function PlayerProvider({ children }) {
     if (!isRetryRef.current) {
       retryCountRef.current = 0;
     }
-    const wasRetry = isRetryRef.current; // simpan sebelum di-reset
-    isRetryRef.current = false; // reset flag setelah dicek
+    const wasRetry = isRetryRef.current;
+    isRetryRef.current = false;
+    if (!wasRetry) prefetchedRef.current.clear(); // track baru → reset prefetch history
     setLoading(true);
     setStreamError(false);
     setEmbedUrl(null);
