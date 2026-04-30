@@ -7,7 +7,9 @@ export function PlayerProvider({ children }) {
   const audioRef = useRef(null);
   const embedRef = useRef(null);          // ← ref ke iframe embed
   const handleNextRef = useRef(null);     // ← anti-stale closure untuk embed ended
+  const handlePrevRef = useRef(null);     // ← anti-stale closure untuk Media Session
   const loadAndPlayRef = useRef(null);    // ← anti-stale closure untuk stall retry
+  const sendEmbedCommandRef = useRef(null); // ← anti-stale closure untuk visibility handler
   const currentTrackRef = useRef(null);  // ← track aktif terbaru (hindari stale closure)
   const retryCountRef = useRef(0);       // ← counter retry stall (max 2x)
   const isRetryRef = useRef(false);      // ← flag: ini retry stall atau track baru
@@ -151,22 +153,66 @@ export function PlayerProvider({ children }) {
     };
   }, []);
 
-  // ─── TAB VISIBILITY — auto-resume saat user balik ke tab ──────────────────
-  // Browser throttle/suspend audio di tab background yang belum fully buffered.
-  // Saat tab aktif lagi, cek apakah audio harusnya playing tapi malah paused.
+  // ─── TAB VISIBILITY — recovery saat user balik ke tab ────────────────────
+  //
+  // MASALAH: browser throttle JS execution di background tab.
+  // Efeknya di iMuzik:
+  //   1. Stream mode  — audio.play() dipanggil tapi browser suspend → paused
+  //   2. Embed mode   — postMessage ke YT iframe bisa di-drop / delay
+  //   3. loadAndPlay  — kalau dipanggil saat background (auto-next),
+  //                     fetch + state update kepotong → track stuck loading
+  //                     sampai user balik ke tab
+  //
+  // SOLUSI: saat tab visible lagi, cek SEMUA kondisi stuck dan recover.
+  // Pakai ref biar handler selalu baca state terbaru (hindari stale closure).
+  const isPlayingRef   = useRef(false);
+  const loadingRef     = useRef(false);
+  const embedUrlRef    = useRef(null);
+  isPlayingRef.current = isPlaying;
+  loadingRef.current   = loading;
+  embedUrlRef.current  = embedUrl;
+
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.hidden) return; // tab ke background, ga perlu action
-      const audio = audioRef.current;
-      if (!audio || embedUrl) return; // embed mode dihandle YT sendiri
-      // isPlaying state true tapi audio.paused = browser suspend saat background
-      if (audio.paused && audio.src && !audio.ended) {
-        audio.play().catch(() => {}); // soft resume, ignore error
+      if (document.hidden) return; // ke background → skip
+
+      const audio      = isPlayingRef.current ? audioRef.current : null;
+      const curEmbed   = embedUrlRef.current;
+      const curLoading = loadingRef.current;
+      const curTrack   = currentTrackRef.current;
+
+      // ── Case 1: Stream mode, audio harusnya playing tapi paused ──────
+      if (!curEmbed && audio && audio.src && !audio.ended && audio.paused) {
+        audio.play().catch(() => {});
+        return;
+      }
+
+      // ── Case 2: Embed mode, postMessage mungkin di-drop browser ──────
+      // Kirim ulang playVideo command biar YT player resume
+      if (curEmbed && isPlayingRef.current) {
+        setTimeout(() => {
+          sendEmbedCommandRef.current?.('playVideo');
+        }, 300); // delay kecil — iframe perlu wake up dulu
+        return;
+      }
+
+      // ── Case 3: loadAndPlay kepotong di background (stuck loading) ───
+      // Tandanya: loading=true tapi ga ada audio src dan ga ada embedUrl
+      // → artinya fetch/state update ga kelar saat background → retry
+      if (curLoading && curTrack) {
+        const audio2 = audioRef.current;
+        const hasAudioSrc  = !!(audio2?.src && !audio2.src.endsWith('/'));
+        const hasEmbed     = !!curEmbed;
+        if (!hasAudioSrc && !hasEmbed) {
+          // loadAndPlay kepotong — reload track dari awal
+          loadAndPlayRef.current?.(curTrack);
+        }
       }
     };
+
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [embedUrl]); // re-attach kalau mode berubah embed ↔ stream
+  }, []); // [] — semua state dibaca via ref, ga perlu re-attach
   // ───────────────────────────────────────────────────────────────────────────
 
   // YouTube IFrame API — listen postMessage dari iframe
@@ -181,9 +227,14 @@ export function PlayerProvider({ children }) {
           if (typeof info.currentTime === 'number') setProgress(info.currentTime);
           if (typeof info.duration === 'number' && info.duration > 0) setDuration(info.duration);
           // playerState: 0=ended, 1=playing, 2=paused
+          // State 1 = YT player beneran udah playing → baru clear loading
           if (info.playerState === 0) handleNextRef.current?.();
-          if (info.playerState === 1) setIsPlaying(true);
+          if (info.playerState === 1) {
+            setIsPlaying(true);
+            setLoading(false); // ← embed beneran siap, bukan cuma iframe load
+          }
           if (info.playerState === 2) setIsPlaying(false);
+          if (info.playerState === 3) setLoading(true); // buffering di YT player
         }
       } catch { /* bukan JSON atau bukan dari YT */ }
     };
@@ -273,21 +324,27 @@ export function PlayerProvider({ children }) {
       if (streamUrl) {
         const audio = audioRef.current;
         audio.src = streamUrl;
-        // audio.load() dihapus — redundant, justru bikin browser abort & restart
         await audio.play();
         setIsPlaying(true);
         setEmbedUrl(null);
+        setLoading(false);
       } else if (useEmbed) {
         const origin = encodeURIComponent(window.location.origin);
         setEmbedUrl(`${embedSrc}&origin=${origin}`);
         setIsPlaying(true);
         setStreamError(false);
+        // ⚠️ JANGAN setLoading(false) di sini!
+        // loading akan di-clear oleh handleYTMessage saat playerState=1
+        // Kalau di-clear sekarang, user liat spinner hilang padahal YT belum siap
       }
       // ──────────────────────────────────────────────────────────────────
     } catch (err) {
       setStreamError(true);
-    } finally {
       setLoading(false);
+    } finally {
+      // Embed mode: loading di-clear sama handleYTMessage (playerState=1)
+      // Stream mode & error: clear di sini
+      if (!embedRef.current?.src) setLoading(false);
     }
   }, [quality]);
 
@@ -371,9 +428,11 @@ export function PlayerProvider({ children }) {
   }, [queue, currentIndex, repeat, shuffle, loadAndPlay]);
 
   // Selalu update ref supaya listener embed & audio gak stale
-  handleNextRef.current = handleNext;
-  loadAndPlayRef.current = loadAndPlay;
-  currentTrackRef.current = currentTrack;
+  handleNextRef.current        = handleNext;
+  handlePrevRef.current        = handlePrev;
+  loadAndPlayRef.current       = loadAndPlay;
+  sendEmbedCommandRef.current  = sendEmbedCommand;
+  currentTrackRef.current      = currentTrack;
 
   const handlePrev = useCallback(() => {
     const audio = audioRef.current;
@@ -410,7 +469,61 @@ export function PlayerProvider({ children }) {
   const isLiked = useCallback((videoId) =>
     likedTracks.some(t => t.videoId === videoId), [likedTracks]);
 
-  // Re-load when quality changes and something is playing
+  // ─── MEDIA SESSION API ─────────────────────────────────────────────────────
+  // Saat user minimize / pindah tab, OS media controls tetap jalan
+  // (notifikasi musik di Android, lock screen di iOS, taskbar Windows)
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    if (!currentTrack) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title:  currentTrack.title  || 'Unknown',
+      artist: currentTrack.artist || 'Unknown Artist',
+      album:  currentTrack.album  || '',
+      artwork: currentTrack.thumbnail ? [
+        { src: currentTrack.thumbnail, sizes: '500x500', type: 'image/jpeg' },
+      ] : [],
+    });
+  }, [currentTrack]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+
+    navigator.mediaSession.setActionHandler('play',           () => togglePlay());
+    navigator.mediaSession.setActionHandler('pause',          () => togglePlay());
+    navigator.mediaSession.setActionHandler('nexttrack',      () => handleNextRef.current?.());
+    navigator.mediaSession.setActionHandler('previoustrack',  () => {
+      const audio = audioRef.current;
+      if (audio && audio.currentTime > 3) { audio.currentTime = 0; return; }
+      handlePrevRef.current?.();
+    });
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (details.seekTime != null) seekTo(details.seekTime);
+    });
+
+    return () => {
+      ['play','pause','nexttrack','previoustrack','seekto'].forEach(action => {
+        try { navigator.mediaSession.setActionHandler(action, null); } catch {}
+      });
+    };
+  }, [togglePlay, seekTo]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !duration) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: 1,
+        position: Math.min(progress, duration),
+      });
+    } catch {}
+  }, [progress, duration]);
+  // ───────────────────────────────────────────────────────────────────────────
   // Pakai ref biar ga baca currentTrack/isPlaying dari closure lama
   useEffect(() => {
     if (currentTrackRef.current && audioRef.current && !audioRef.current.paused) {
