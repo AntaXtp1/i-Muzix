@@ -473,13 +473,6 @@ export function PlayerProvider({ children }) {
     loadAndPlay(queue[nextIdx]);
   }, [queue, currentIndex, repeat, shuffle, loadAndPlay]);
 
-  // Selalu update ref supaya listener embed & audio gak stale
-  handleNextRef.current        = handleNext;
-  handlePrevRef.current        = handlePrev;
-  loadAndPlayRef.current       = loadAndPlay;
-  sendEmbedCommandRef.current  = sendEmbedCommand;
-  currentTrackRef.current      = currentTrack;
-
   const handlePrev = useCallback(() => {
     const audio = audioRef.current;
     if (audio && audio.currentTime > 3) {
@@ -490,6 +483,14 @@ export function PlayerProvider({ children }) {
     setCurrentIndex(prevIdx);
     loadAndPlay(queue[prevIdx]);
   }, [queue, currentIndex, loadAndPlay]);
+
+  // Selalu update ref supaya listener embed & audio gak stale
+  // ⚠️ Harus SETELAH semua fungsi didefinisikan (handlePrev, handleNext, dll)
+  handleNextRef.current        = handleNext;
+  handlePrevRef.current        = handlePrev;
+  loadAndPlayRef.current       = loadAndPlay;
+  sendEmbedCommandRef.current  = sendEmbedCommand;
+  currentTrackRef.current      = currentTrack;
 
   const seekTo = useCallback((time) => {
     const audio = audioRef.current;
