@@ -114,7 +114,7 @@ export default function PlayerBar() {
         <div className="flex items-center gap-5">
           {/* Shuffle */}
           <button
-            onClick={() => setShuffle(s => !s)}
+            onClick={setShuffle}
             className={`transition-colors duration-200 ${shuffle ? 'text-[#C8FF3E]' : 'text-white/30 hover:text-white'}`}
           >
             <Shuffle size={15} />
